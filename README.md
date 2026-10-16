@@ -8,7 +8,7 @@ Pictures are saved in `~/Pictures`.
 
 ## Install
 
-On the Frame, open Desktop Mode and download `frameshot-linux-arm64.tar.gz` from the [latest release](https://github.com/chrispavs/Steam-Frame-Image-Viewer/releases). Then:
+On the Frame, open Desktop Mode and download `frameshot-linux-arm64.tar.gz` from the [latest release](https://github.com/chrispavs/Steam-Frame-Screenshot-Tool/releases). Then:
 
 ```bash
 tar -xzf frameshot-linux-arm64.tar.gz
@@ -51,8 +51,8 @@ sudo pacman -S --needed base-devel wayland
 Then:
 
 ```bash
-git clone https://github.com/chrispavs/Steam-Frame-Image-Viewer.git
-cd Steam-Frame-Image-Viewer
+git clone https://github.com/chrispavs/Steam-Frame-Screenshot-Tool.git
+cd Steam-Frame-Screenshot-Tool
 make
 ./install.sh
 ```
