@@ -1,0 +1,12 @@
+[Unit]
+Description=Headset screenshot on Ctrl+Shift+2
+After=gamescope-session.service
+PartOf=gamescope-session.target
+
+[Service]
+ExecStart="/home/steamos/Desktop/Tools/Steam Frame Screenshot Tool/frameshot" --listen
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=gamescope-session.target
