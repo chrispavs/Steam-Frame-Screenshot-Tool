@@ -4,7 +4,7 @@ After=gamescope-session.service
 PartOf=gamescope-session.target
 
 [Service]
-ExecStart="/home/steamos/Desktop/Tools/Steam Frame Screenshot Tool/frameshot" --listen
+ExecStart="@BIN@" --listen
 Restart=on-failure
 RestartSec=2
 

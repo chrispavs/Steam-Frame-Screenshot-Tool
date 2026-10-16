@@ -19,5 +19,16 @@ $(PROTOCOL_C): protocol/gamescope-action-binding.xml
 $(PROTOCOL_O): $(PROTOCOL_C) $(PROTOCOL_H)
 	gcc -O2 -Iprotocol -c -o $@ $(PROTOCOL_C)
 
+install: frameshot
+	./install.sh
+
+release: frameshot install.sh packaging/frame-screenshot.desktop.in packaging/frameshot-keys.service.in
+	rm -rf dist/frameshot-linux-arm64
+	mkdir -p dist/frameshot-linux-arm64/packaging
+	cp frameshot install.sh dist/frameshot-linux-arm64/
+	cp packaging/frame-screenshot.desktop.in packaging/frameshot-keys.service.in dist/frameshot-linux-arm64/packaging/
+	tar -C dist -czf dist/frameshot-linux-arm64.tar.gz frameshot-linux-arm64
+	@echo dist/frameshot-linux-arm64.tar.gz
+
 clean:
-	rm -f frameshot $(PROTOCOL_H) $(PROTOCOL_C) $(PROTOCOL_O)
+	rm -rf frameshot $(PROTOCOL_H) $(PROTOCOL_C) $(PROTOCOL_O) dist

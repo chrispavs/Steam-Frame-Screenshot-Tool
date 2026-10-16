@@ -1,5 +1,6 @@
 frameshot
 *.o
 *.d
+dist/
 protocol/gamescope-action-binding-client-protocol.h
 protocol/gamescope-action-binding-protocol.c

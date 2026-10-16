@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Frame Screenshot
-Comment=Save a screenshot of what the Steam Frame compositor is showing
-Exec="/home/steamos/Desktop/Tools/Steam Frame Screenshot Tool/frameshot" --view
-Icon=camera-photo
-Terminal=false
-Categories=Utility;
-StartupNotify=true

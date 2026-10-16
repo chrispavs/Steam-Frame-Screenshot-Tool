@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Frame Screenshot
+Comment=Save what you see in the Steam Frame headset
+Exec="@BIN@" --view
+Icon=camera-photo
+Terminal=false
+Categories=Utility;
+StartupNotify=true
