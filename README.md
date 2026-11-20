@@ -22,19 +22,25 @@ To remove it, run `./install.sh --uninstall` from that same directory.
 
 ## Use
 
-Press **Ctrl+Shift+2**.
+Take a screenshot with **Ctrl+Shift+2** on a keyboard connected to the Frame!
 
-This works with a keyboard connected to the Frame and with a Remote Play keyboard, including while an immersive game is running. The picture is written to `~/Pictures/Frame-YYYYMMDD-HHMMSS.png`.
+A sound will play when a screenshot is taken.
 
-**Frame Screenshot** in the application menu does the same thing, then opens the picture.
+This shortcut works anywhere, including when a game is running. The picture is written to `~/Pictures/Frame-YYYYMMDD-HHMMSS.png`.
 
-The default picture is one eye, which matches the view you see. From a terminal:
+### Settings
+
+**Frame Screenshot Settings** is a settings menu where you can change things like the shortcut, which eye is used for the screenshot (left, right, or both eyes), or the screenshot sound.
+
+### CLI
+
+You can also take a screenshot from a terminal:
 
 ```bash
-frameshot                  # save one eye
-frameshot --view           # save one eye and open it
-frameshot --both           # save both eyes, side by side
-frameshot ~/Pictures/shot.png
+frameshot                      # screenshot one eye
+frameshot --view               # screenshot one eye and open it
+frameshot --both               # screenshot both eyes, side by side
+frameshot ~/Pictures/shot.png  # take a screenshot and save it as shot.png
 ```
 
 ## How to build

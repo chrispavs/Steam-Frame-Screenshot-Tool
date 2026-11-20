@@ -1,0 +1,723 @@
+#!/usr/bin/env python3
+"""Change the Frame Screenshot shortcut, picture, and sound options."""
+
+import os
+import sys
+from pathlib import Path
+
+# Gamescope's Vulkan swapchain can present a blank first frame. OpenGL is reliable
+# here, and a restarted desktop can leave WAYLAND_DISPLAY pointing at a deleted socket.
+os.environ.setdefault("GSK_RENDERER", "ngl")
+os.environ.setdefault("GTK_A11Y", "none")
+os.environ.setdefault("NO_AT_BRIDGE", "1")
+
+
+def _prefer_reachable_display():
+    name = os.environ.get("WAYLAND_DISPLAY", "")
+    if not name:
+        return
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    sock = name if name.startswith("/") else os.path.join(runtime, name)
+    if sock and os.path.exists(sock):
+        return
+    if not os.environ.get("DISPLAY"):
+        return
+    os.environ.pop("WAYLAND_DISPLAY", None)
+    os.environ["GDK_BACKEND"] = "x11"
+
+
+_prefer_reachable_display()
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+
+APP_ID = "org.steamframe.FrameScreenshotSettings"
+
+MODIFIER_KEYVALS = {
+    Gdk.KEY_Control_L,
+    Gdk.KEY_Control_R,
+    Gdk.KEY_Shift_L,
+    Gdk.KEY_Shift_R,
+    Gdk.KEY_Alt_L,
+    Gdk.KEY_Alt_R,
+    Gdk.KEY_Super_L,
+    Gdk.KEY_Super_R,
+    Gdk.KEY_Meta_L,
+    Gdk.KEY_Meta_R,
+    Gdk.KEY_ISO_Level3_Shift,
+    Gdk.KEY_ISO_Level5_Shift,
+    Gdk.KEY_Caps_Lock,
+    Gdk.KEY_Num_Lock,
+    Gdk.KEY_Scroll_Lock,
+}
+
+PRETTY = {
+    "Print": "Print Screen",
+    "Return": "Enter",
+    "KP_Enter": "Enter",
+    "BackSpace": "Backspace",
+    "Prior": "Page Up",
+    "Next": "Page Down",
+    "Escape": "Esc",
+    "space": "Space",
+    "Tab": "Tab",
+    "ISO_Left_Tab": "Tab",
+}
+
+
+def config_path():
+    home = Path(os.environ.get("HOME", "."))
+    config = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(config) if config else home / ".config"
+    return root / "frameshot" / "settings"
+
+
+def frameshot_binary():
+    beside = Path(__file__).resolve().parent / "frameshot"
+    if beside.is_file() and os.access(beside, os.X_OK):
+        return str(beside)
+    installed = Path.home() / ".local" / "bin" / "frameshot"
+    if installed.is_file() and os.access(installed, os.X_OK):
+        return str(installed)
+    return None
+
+
+def parse_bool(value):
+    return value.strip() in {"1", "true", "yes", "on"}
+
+
+def load_settings():
+    settings = {
+        "evdev": 3,
+        "ctrl": True,
+        "shift": True,
+        "alt": False,
+        "super": False,
+        "eye": "left",
+        "open_after": False,
+        "sound": False,
+        "sound_file": "",
+        "sound_volume": 75,
+    }
+    path = config_path()
+    if not path.is_file():
+        return settings
+    saw_eye = False
+    legacy_both = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key == "evdev":
+            try:
+                code = int(value)
+            except ValueError:
+                continue
+            if 0 < code <= 0x2FF:
+                settings["evdev"] = code
+        elif key == "eye" and value in {"left", "right", "both"}:
+            settings["eye"] = value
+            saw_eye = True
+        elif key == "both":
+            legacy_both = parse_bool(value)
+        elif key == "sound":
+            settings["sound"] = parse_bool(value)
+        elif key == "sound_file":
+            settings["sound_file"] = value
+        elif key == "sound_volume":
+            try:
+                volume = int(value)
+            except ValueError:
+                continue
+            settings["sound_volume"] = max(0, min(100, volume))
+        elif key in {"ctrl", "shift", "alt", "super", "open_after"}:
+            settings[key] = parse_bool(value)
+    if not saw_eye and legacy_both:
+        settings["eye"] = "both"
+    return settings
+
+
+def save_settings(settings):
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(
+        [
+            f"evdev={settings['evdev']}",
+            f"ctrl={int(settings['ctrl'])}",
+            f"shift={int(settings['shift'])}",
+            f"alt={int(settings['alt'])}",
+            f"super={int(settings['super'])}",
+            f"eye={settings['eye']}",
+            f"open_after={int(settings['open_after'])}",
+            f"sound={int(settings['sound'])}",
+            f"sound_file={settings['sound_file']}",
+            f"sound_volume={int(settings['sound_volume'])}",
+            "",
+        ]
+    )
+    temporary = path.with_name("settings.tmp")
+    temporary.write_text(body, encoding="utf-8")
+    temporary.replace(path)
+
+
+def default_sound_path():
+    candidates = []
+    data = os.environ.get("XDG_DATA_HOME", "")
+    if data:
+        candidates.append(Path(data) / "frameshot" / "shutter.wav")
+    candidates.append(Path.home() / ".local" / "share" / "frameshot" / "shutter.wav")
+    candidates.append(Path(__file__).resolve().parent / "sounds" / "shutter.wav")
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def pretty_keyval(keyval):
+    name = Gdk.keyval_name(keyval) or "Unknown"
+    if name in PRETTY:
+        return PRETTY[name]
+    if len(name) == 1 and name.isalpha():
+        return name.upper()
+    return name.replace("_", " ")
+
+
+def shortcut_label(settings, display):
+    parts = []
+    if settings["ctrl"]:
+        parts.append("Ctrl")
+    if settings["alt"]:
+        parts.append("Alt")
+    if settings["shift"]:
+        parts.append("Shift")
+    if settings["super"]:
+        parts.append("Super")
+    keycode = settings["evdev"] + 8
+    found, keyval, _group, _level, _consumed = display.translate_key(keycode, Gdk.ModifierType(0), 0)
+    parts.append(pretty_keyval(keyval) if found else f"Key {settings['evdev']}")
+    return "+".join(parts)
+
+
+def is_typing_key(display, evdev):
+    found, keyval, _group, _level, _consumed = display.translate_key(evdev + 8, Gdk.ModifierType(0), 0)
+    return found and 32 <= keyval <= 126
+
+
+class SettingsWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Frame Screenshot Tool")
+        self.settings = load_settings()
+        self.capturing = False
+        self._status_timer = 0
+        self._volume_timer = 0
+        self.set_default_size(440, -1)
+        self.add_css_class("settings")
+
+        header = Gtk.HeaderBar()
+        header.add_css_class("settings-header")
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        titles.set_valign(Gtk.Align.CENTER)
+        heading = Gtk.Label(label="Frame Screenshot Tool")
+        heading.add_css_class("settings-title")
+        subtitle = Gtk.Label(label="Settings")
+        subtitle.add_css_class("settings-subtitle")
+        titles.append(heading)
+        titles.append(subtitle)
+        header.set_title_widget(titles)
+        self.set_titlebar(header)
+
+        style = Gtk.CssProvider()
+        style.load_from_data(
+            b"""
+            window.settings {
+              background-color: #282c34;
+              color: #abb2bf;
+            }
+            headerbar.settings-header {
+              background-color: #21252b;
+              background-image: none;
+              color: #9da5b4;
+              box-shadow: none;
+              border-bottom: 1px solid #181a1f;
+            }
+            headerbar.settings-header:backdrop {
+              background-color: #21252b;
+              color: #636d83;
+            }
+            headerbar.settings-header .settings-title {
+              color: #d7dae0;
+              font-weight: 600;
+            }
+            headerbar.settings-header .settings-subtitle,
+            headerbar.settings-header:backdrop .settings-title {
+              color: #9da5b4;
+              font-size: 12px;
+            }
+            headerbar.settings-header windowcontrols button {
+              background-color: transparent;
+              background-image: none;
+              color: #abb2bf;
+              box-shadow: none;
+            }
+            headerbar.settings-header windowcontrols button:hover {
+              background-color: #2c313a;
+              color: #d7dae0;
+            }
+            headerbar.settings-header windowcontrols button.close:hover {
+              background-color: #e06c75;
+              color: #ffffff;
+            }
+            window.settings label {
+              color: #abb2bf;
+            }
+            window.settings .section-title,
+            window.settings .shortcut-value {
+              color: #d7dae0;
+            }
+            window.settings .shortcut-value {
+              font-weight: 700;
+            }
+            window.settings .hint,
+            window.settings .status {
+              color: #9da5b4;
+            }
+            window.settings .card-block {
+              padding: 16px;
+              border-radius: 12px;
+              background-color: #21252b;
+              border: 1px solid #181a1f;
+            }
+            window.settings button {
+              background-color: #2c313a;
+              background-image: none;
+              color: #d7dae0;
+              border: 1px solid #181a1f;
+              box-shadow: none;
+              padding: 6px 14px;
+            }
+            window.settings button:hover {
+              background-color: #3e4451;
+              color: #ffffff;
+            }
+            window.settings button.suggested-action {
+              background-color: #684ade;
+              background-image: none;
+              color: #ffffff;
+              border-color: #181a1f;
+            }
+            window.settings button.suggested-action:hover {
+              background-color: #8c75e6;
+              color: #ffffff;
+            }
+            window.settings button:focus-visible {
+              outline: 2px solid #684ade;
+              outline-offset: 1px;
+            }
+            window.settings checkbutton {
+              color: #abb2bf;
+              padding: 4px 6px;
+              border-radius: 6px;
+            }
+            window.settings checkbutton:hover {
+              background-color: #2c313a;
+            }
+            window.settings checkbutton radio,
+            window.settings checkbutton check {
+              background-color: #282c34;
+              background-image: none;
+              border: 1px solid #5c6370;
+              box-shadow: none;
+              color: transparent;
+              min-width: 16px;
+              min-height: 16px;
+            }
+            window.settings checkbutton:hover radio,
+            window.settings checkbutton:hover check {
+              border-color: #684ade;
+              background-color: #2c313a;
+            }
+            window.settings checkbutton:checked radio,
+            window.settings checkbutton:checked check {
+              background-color: #684ade;
+              border-color: #684ade;
+              color: #ffffff;
+            }
+            window.settings checkbutton:checked:hover radio,
+            window.settings checkbutton:checked:hover check {
+              background-color: #8c75e6;
+              border-color: #8c75e6;
+              color: #ffffff;
+            }
+            window.settings checkbutton radio:focus-visible,
+            window.settings checkbutton check:focus-visible {
+              outline: 2px solid #684ade;
+              outline-offset: 1px;
+            }
+            window.settings scale trough {
+              background-color: #2c313a;
+              border-radius: 99px;
+              min-height: 6px;
+            }
+            window.settings scale highlight {
+              background-color: #684ade;
+              border-radius: 99px;
+            }
+            window.settings scale slider {
+              background-color: #d7dae0;
+              border: 1px solid #181a1f;
+              border-radius: 99px;
+              box-shadow: none;
+              min-width: 16px;
+              min-height: 16px;
+            }
+            window.settings scale slider:hover {
+              background-color: #ffffff;
+            }
+            """,
+            -1,
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            style,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        page.set_margin_top(18)
+        page.set_margin_bottom(18)
+        page.set_margin_start(18)
+        page.set_margin_end(18)
+        self.set_child(page)
+
+        shortcut = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        shortcut.add_css_class("card-block")
+        shortcut_title = Gtk.Label(label="Shortcut", xalign=0)
+        shortcut_title.add_css_class("section-title")
+        self.value = Gtk.Label(xalign=0)
+        self.value.add_css_class("title-2")
+        self.value.add_css_class("shortcut-value")
+        buttons = Gtk.Box(spacing=8)
+        self.change = Gtk.Button(label="Change shortcut")
+        self.change.add_css_class("suggested-action")
+        self.change.connect("clicked", self.on_change)
+        reset = Gtk.Button(label="Reset")
+        reset.connect("clicked", self.on_reset)
+        buttons.append(self.change)
+        buttons.append(reset)
+        hint = Gtk.Label(
+            label="Works with a keyboard connected to the Frame and with Remote Play, including in a game.",
+            xalign=0,
+            wrap=True,
+        )
+        hint.add_css_class("hint")
+        shortcut.append(shortcut_title)
+        shortcut.append(self.value)
+        shortcut.append(buttons)
+        shortcut.append(hint)
+        page.append(shortcut)
+
+        picture = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        picture.add_css_class("card-block")
+        picture_title = Gtk.Label(label="Picture", xalign=0)
+        picture_title.add_css_class("section-title")
+        self.left_eye = Gtk.CheckButton(label="Left eye")
+        self.right_eye = Gtk.CheckButton(label="Right eye")
+        self.both_eyes = Gtk.CheckButton(label="Both eyes, side by side")
+        self.right_eye.set_group(self.left_eye)
+        self.both_eyes.set_group(self.left_eye)
+        self.open_after = Gtk.CheckButton(label="Open the picture after the shortcut saves it")
+        picture.append(picture_title)
+        picture.append(self.left_eye)
+        picture.append(self.right_eye)
+        picture.append(self.both_eyes)
+        picture.append(self.open_after)
+        page.append(picture)
+
+        sound = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        sound.add_css_class("card-block")
+        sound_title = Gtk.Label(label="Sound", xalign=0)
+        sound_title.add_css_class("section-title")
+        self.sound_enabled = Gtk.CheckButton(label="Enabled")
+        volume_row = Gtk.Box(spacing=10)
+        volume_label = Gtk.Label(label="Volume", xalign=0)
+        self.volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.volume.set_draw_value(False)
+        self.volume.set_hexpand(True)
+        self.volume.set_value(self.settings["sound_volume"])
+        self.volume_value = Gtk.Label(xalign=1)
+        self.volume_value.set_width_chars(4)
+        self.volume_value.add_css_class("hint")
+        volume_row.append(volume_label)
+        volume_row.append(self.volume)
+        volume_row.append(self.volume_value)
+        sound_row = Gtk.Box(spacing=8)
+        self.sound_name = Gtk.Label(xalign=0)
+        self.sound_name.set_hexpand(True)
+        self.sound_name.set_ellipsize(Pango.EllipsizeMode.END)
+        self.sound_name.add_css_class("hint")
+        change_sound = Gtk.Button(label="Change Sound")
+        change_sound.add_css_class("suggested-action")
+        change_sound.connect("clicked", self.on_change_sound)
+        reset_sound = Gtk.Button(label="Reset")
+        reset_sound.connect("clicked", self.on_reset_sound)
+        sound_row.append(self.sound_name)
+        sound_row.append(change_sound)
+        sound_row.append(reset_sound)
+        sound.append(sound_title)
+        sound.append(self.sound_enabled)
+        sound.append(volume_row)
+        sound.append(sound_row)
+        page.append(sound)
+
+        actions = Gtk.Box(spacing=12)
+        actions.set_margin_top(2)
+        take = Gtk.Button(label="Take a screenshot")
+        take.connect("clicked", self.on_take)
+        self.status = Gtk.Label(xalign=0)
+        self.status.add_css_class("status")
+        self.status.set_hexpand(True)
+        actions.append(take)
+        actions.append(self.status)
+        page.append(actions)
+
+        self._show_shortcut()
+        if self.settings["eye"] == "right":
+            self.right_eye.set_active(True)
+        elif self.settings["eye"] == "both":
+            self.both_eyes.set_active(True)
+        else:
+            self.left_eye.set_active(True)
+        self.open_after.set_active(self.settings["open_after"])
+        self.left_eye.connect("toggled", self.on_picture)
+        self.right_eye.connect("toggled", self.on_picture)
+        self.both_eyes.connect("toggled", self.on_picture)
+        self.open_after.connect("toggled", self.on_picture)
+        self.sound_enabled.set_active(self.settings["sound"])
+        self._show_sound()
+        self._show_volume()
+        self.sound_enabled.connect("toggled", self.on_sound_enabled)
+        self.volume.connect("value-changed", self.on_volume)
+
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+
+    def display(self):
+        return Gdk.Display.get_default()
+
+    def _show_shortcut(self):
+        self.value.set_label(shortcut_label(self.settings, self.display()))
+
+    def _set_status(self, message, clear_after=5):
+        if self._status_timer:
+            GLib.source_remove(self._status_timer)
+            self._status_timer = 0
+        self.status.set_label(message)
+        if not message or not clear_after:
+            return
+
+        def clear():
+            self._status_timer = 0
+            if self.status.get_label() == message:
+                self.status.set_label("")
+            return False
+
+        self._status_timer = GLib.timeout_add_seconds(clear_after, clear)
+
+    def _persist(self, message):
+        save_settings(self.settings)
+        self._set_status(message)
+
+    def on_change(self, _button):
+        if self.capturing:
+            self._stop_capture()
+            return
+        self.capturing = True
+        self.value.set_label("Press a shortcut…")
+        self.change.set_label("Cancel")
+        self.change.remove_css_class("suggested-action")
+        self._set_status("Escape cancels.")
+
+    def _stop_capture(self):
+        self.capturing = False
+        self.change.set_label("Change shortcut")
+        self.change.add_css_class("suggested-action")
+        self._show_shortcut()
+        if self.status.get_label() == "Escape cancels.":
+            self._set_status("")
+
+    def on_reset(self, _button):
+        if self.capturing:
+            self._stop_capture()
+        self.settings.update(evdev=3, ctrl=True, shift=True, alt=False, super=False)
+        self._show_shortcut()
+        self._persist("Restored Ctrl+Shift+2.")
+
+    def on_picture(self, button):
+        if button in (self.left_eye, self.right_eye, self.both_eyes) and not button.get_active():
+            return
+        if self.right_eye.get_active():
+            self.settings["eye"] = "right"
+        elif self.both_eyes.get_active():
+            self.settings["eye"] = "both"
+        else:
+            self.settings["eye"] = "left"
+        self.settings["open_after"] = self.open_after.get_active()
+        self._persist("Saved.")
+
+    def _show_sound(self):
+        custom = self.settings["sound_file"]
+        if custom:
+            self.sound_name.set_label(Path(custom).name)
+            self.sound_name.set_tooltip_text(custom)
+            return
+        self.sound_name.set_label("Built-in shutter")
+        self.sound_name.set_tooltip_text("Plays the sound that comes with Frame Screenshot")
+
+    def _show_volume(self):
+        self.volume_value.set_label(f"{int(self.settings['sound_volume'])}%")
+
+    def on_volume(self, scale):
+        volume = max(0, min(100, int(round(scale.get_value()))))
+        self.settings["sound_volume"] = volume
+        self._show_volume()
+        if self._volume_timer:
+            GLib.source_remove(self._volume_timer)
+
+        def commit():
+            self._volume_timer = 0
+            self._persist("Saved.")
+            if volume > 0:
+                self._preview_sound()
+            return False
+
+        self._volume_timer = GLib.timeout_add(250, commit)
+
+    def _preview_sound(self):
+        binary = frameshot_binary()
+        if not binary:
+            self._set_status("frameshot is not installed.")
+            return
+        try:
+            Gio.Subprocess.new([binary, "--play-sound"], Gio.SubprocessFlags.NONE)
+        except GLib.Error:
+            self._set_status("Could not play the screenshot sound.")
+
+    def on_sound_enabled(self, button):
+        self.settings["sound"] = button.get_active()
+        self._persist("Saved.")
+        if button.get_active():
+            self._preview_sound()
+
+    def on_reset_sound(self, _button):
+        if self._volume_timer:
+            GLib.source_remove(self._volume_timer)
+            self._volume_timer = 0
+        self.settings["sound_file"] = ""
+        self._show_sound()
+        self._persist("Restored the built-in shutter.")
+        if self.settings["sound_volume"] > 0:
+            self._preview_sound()
+
+    def on_change_sound(self, _button):
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Change Sound")
+        dialog.set_modal(True)
+        audio = Gtk.FileFilter()
+        audio.set_name("Sounds")
+        for mime in ("audio/wav", "audio/x-wav", "audio/ogg", "audio/vorbis", "audio/flac", "audio/mpeg", "audio/mp3"):
+            audio.add_mime_type(mime)
+        for pattern in ("*.wav", "*.ogg", "*.oga", "*.flac", "*.mp3"):
+            audio.add_pattern(pattern)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(audio)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(audio)
+        current = self.settings["sound_file"]
+        if current and os.path.isfile(current):
+            dialog.set_initial_file(Gio.File.new_for_path(current))
+        else:
+            dialog.set_initial_folder(Gio.File.new_for_path(str(Path.home())))
+        self._sound_dialog = dialog
+        dialog.open(self, None, self.on_sound_chosen)
+
+    def on_sound_chosen(self, dialog, result):
+        try:
+            chosen = dialog.open_finish(result)
+        except GLib.Error:
+            return
+        path = chosen.get_path()
+        if not path:
+            self._set_status("That sound could not be used.")
+            return
+        builtin = default_sound_path()
+        try:
+            same = bool(builtin) and os.path.samefile(path, builtin)
+        except OSError:
+            same = False
+        self.settings["sound_file"] = "" if same else path
+        self._show_sound()
+        self._persist("Saved.")
+        self._preview_sound()
+
+    def on_key(self, _controller, keyval, keycode, state):
+        if not self.capturing:
+            return False
+        if keyval == Gdk.KEY_Escape:
+            self._stop_capture()
+            return True
+        if keyval in MODIFIER_KEYVALS:
+            return True
+        mods = Gdk.ModifierType(state)
+        ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
+        alt = bool(mods & Gdk.ModifierType.ALT_MASK)
+        super_key = bool(mods & (Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK))
+        evdev = keycode - 8
+        if evdev <= 0 or evdev > 0x2FF:
+            self._set_status("That key is not available.")
+            return True
+        if not (ctrl or shift or alt or super_key) and is_typing_key(self.display(), evdev):
+            self._set_status("Add Ctrl, Alt, Shift, or Super so typing does not take a screenshot.")
+            return True
+        self.settings.update(evdev=evdev, ctrl=ctrl, shift=shift, alt=alt, super=super_key)
+        self._stop_capture()
+        self._persist("Saved. The shortcut updates within a second.")
+        return True
+
+    def on_take(self, _button):
+        binary = frameshot_binary()
+        if not binary:
+            self._set_status("frameshot is not installed.")
+            return
+        flag = {"left": "--left", "right": "--right", "both": "--both"}.get(self.settings["eye"], "--left")
+        args = [binary, flag, "--view"]
+        Gio.Subprocess.new(args, Gio.SubprocessFlags.NONE)
+        self._set_status("Taking a screenshot…")
+
+
+class SettingsApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID)
+
+    def do_activate(self):
+        windows = self.get_windows()
+        if windows:
+            windows[0].present()
+            return
+        SettingsWindow(self).present()
+
+
+def main():
+    app = SettingsApp()
+    return app.run(sys.argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
