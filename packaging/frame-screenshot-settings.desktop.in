@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Frame Screenshot Settings
+Comment=Change the headset screenshot shortcut
+Exec="@SETTINGS@"
+Icon=input-keyboard
+Terminal=false
+Categories=Settings;Utility;
+StartupNotify=true
